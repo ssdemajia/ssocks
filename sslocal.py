@@ -1,13 +1,25 @@
 import socket
 import select
 import struct
+from crypttest import rc4_crypt
 
 
 SS_INIT = 1
 SS_ADDR = 2
-SS_TCP = 4
-SS_DNS = 8
-SS_UDP = 16
+SS_TCP = 3
+SS_DNS = 4
+SS_UDP = 5
+SS_WAIT_REMOTE = 6
+
+client_stage = {}
+tcp_headers = {}
+remote_local = {}
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setblocking(False)    # 设置为非阻塞模式
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # 地址重用
+server.bind(('127.0.0.1', 9998))
+server.listen(1024)
+rlist, wlist, elist = [server], [], []
 
 
 class SocksError(RuntimeError):
@@ -15,7 +27,7 @@ class SocksError(RuntimeError):
         self.args = arg
 
 
-def handler_init(conn_fd, client_stage):
+def handler_init(conn_fd):
     ver = conn_fd.recv(1)  # socks 版本
     nmethod = conn_fd.recv(1)  # 客户端的支持方法个数
     methods = conn_fd.recv(nmethod[0])  # ord()将 b'\x10' => 16
@@ -29,7 +41,7 @@ def handler_init(conn_fd, client_stage):
     client_stage[conn_fd] = SS_ADDR
 
 
-def handler_addr(conn_fd, client_stage, tcp_headers):
+def handler_addr(conn_fd):
     ver = conn_fd.recv(1)  # 版本
     cmd = conn_fd.recv(1)  # command
     rsv = conn_fd.recv(1)
@@ -52,7 +64,7 @@ def handler_addr(conn_fd, client_stage, tcp_headers):
             dest_port = struct.unpack('>H', port)[0]
         else:
             print("Not ipv4 or domain!")
-        print("{0}:{1}".format(dest_addr, dest_port))
+        print("{0}:{1}".format(addr, port))
         conn_fd.send(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
         tcp_headers[conn_fd] = (dest_addr, dest_port)
         client_stage[conn_fd] = SS_TCP
@@ -62,35 +74,37 @@ def handler_addr(conn_fd, client_stage, tcp_headers):
         raise SocksError("cmd不认识:%d"%cmd[0])
 
 
-def handler_tcp(conn_fd, tcp_headers):
+def handler_tcp(conn_fd):
     """将数据加密后发往sserver"""
+    data = conn_fd.recv(32 * 1024)
+    print("tcp data:", len(data))
+    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    remote_local[remote] = conn_fd
+    client_stage[remote] = SS_WAIT_REMOTE
+    remote.connect(("45.77.152.130", 9900))
+    addr, port = tcp_headers[conn_fd]
+    packet = bytes(len(addr)) + addr + port + data
+    remote.send(rc4_crypt(b'shaoshuai', packet))
+    rlist.append(remote)
 
 
 def main():
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setblocking(False)    # 设置为非阻塞模式
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # 地址重用
-    s.bind(('127.0.0.1', 9998))
-    s.listen(1024)
-    rlist, wlist, elist = [s], [], []
-    client_stage = {}
-    tcp_headers = {}
     while True:
         readable, writable, errorable = select.select(rlist, wlist, elist)
         for fd in readable:
-            if fd is s:   # 有新连接
-                conn_fd, address = s.accept()
+            if fd is server:   # 有新连接
+                conn_fd, address = server.accept()
                 conn_fd.setblocking(False)
                 rlist.append(conn_fd)
                 client_stage[conn_fd] = SS_INIT
                 print("connect client:", address)
             else:
                 if client_stage[fd] == SS_INIT:
-                    handler_init(fd, client_stage)
+                    handler_init(fd)
                 elif client_stage[fd] == SS_ADDR:
-                    handler_addr(fd, client_stage, tcp_headers)
+                    handler_addr(fd)
                 elif client_stage[fd] == SS_TCP:
-                    handler_tcp(fd, tcp_headers)
+                    handler_tcp(fd)
 
 
 if __name__ == '__main__':
