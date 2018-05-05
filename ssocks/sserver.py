@@ -1,6 +1,7 @@
 import socket
 import select
-from crypttest import rc4_crypt
+import struct
+from ssocks.crypttest import rc4_crypt
 
 """
 放在vps上
@@ -24,13 +25,26 @@ tcp_headers = {}
 
 
 def handle_tcp(conn):
-    data = conn.read(32*1024)
-    data = rc4_crypt(r"shaoshuai", data)
-    len = data[0]
-    addr = data[1:len]
-    print("请求地址为:",addr)
+    data = conn.recv(32*1024)
+    # data = rc4_crypt(r"shaoshuai", data)
+    len, port = struct.unpack("!HH", data[:4])
+    addr_fmt = "!HH%ds" % len
+    addr = struct.unpack(addr_fmt, data[:len+4])[2]
+    data = data[len+4:]
+    # print("请求地址为:", addr)
+    # print("len:", len)
+    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print(addr,port)
+    remote.connect((addr, port))
+    remote.send(data)
+    recv_remote = remote.recv(32*1024)
+    print(recv_remote)
+    conn.send(recv_remote)
+    conn.close()
+    rlist.remove(conn)
 
 def main():
+    print("server open")
     while True:
         readable, writable, errorable = select.select(rlist, wlist, elist)
         for fd in readable:
@@ -46,6 +60,7 @@ def main():
         for fd in errorable:
             if fd is s:
                 return
+
 
 if __name__ == '__main__':
     main()
